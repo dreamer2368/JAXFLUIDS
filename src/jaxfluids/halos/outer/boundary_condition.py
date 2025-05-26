@@ -386,6 +386,14 @@ def get_face_slices_retrieve(
             "south"     :   jnp.s_[..., nhx, nh:nh+1, nhz], 
             "top"       :   jnp.s_[..., nhx, nhy, -nh-1:-nh], 
             "bottom"    :   jnp.s_[..., nhx, nhy, nh:nh+1], 
+        },
+        "BeaverJoseph":{
+            "east"      :   jnp.s_[..., -nh:-nh+1, nhy, nhz], 
+            "west"      :   jnp.s_[..., nh-1:nh, nhy, nhz], 
+            "north"     :   jnp.s_[..., nhx, -nh:-nh+1, nhz], 
+            "south"     :   jnp.s_[..., nhx, nh-1:nh, nhz], 
+            "top"       :   jnp.s_[..., nhx, nhy, -nh:-nh+1], 
+            "bottom"    :   jnp.s_[..., nhx, nhy, nh-1:nh], 
         }
     }
     return face_slices_retrieve

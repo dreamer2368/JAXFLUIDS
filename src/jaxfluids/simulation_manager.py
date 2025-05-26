@@ -166,7 +166,7 @@ class SimulationManager:
             simulation_buffers: SimulationBuffers,
             time_control_variables: TimeControlVariables,
             forcing_parameters: ForcingParameters = ForcingParameters(),
-            ml_parameters_dict: Dict = None,
+            ml_parameters_dict: Union[Dict,Array,None ]= None,
             ml_networks_dict: Dict = None,
             ) -> int:
         """Performs a conventional CFD simulation.
@@ -265,7 +265,7 @@ class SimulationManager:
             simulation_buffers: SimulationBuffers,
             time_control_variables: TimeControlVariables,
             forcing_parameters: ForcingParameters = None,
-            ml_parameters_dict: Dict = None,
+            ml_parameters_dict: Union[Dict,Array, None ]= None,
             ml_networks_dict = None,
             ) -> None:
         """Advances the initial buffers in time.
@@ -441,7 +441,7 @@ class SimulationManager:
             forcing_parameters: ForcingParameters,
             perform_reinitialization: bool,
             perform_compression: bool,
-            ml_parameters_dict: Union[Dict, None] = None,
+            ml_parameters_dict: Union[Dict, Array, None] = None,
             ml_networks_dict: Union[Dict, None] = None,
             is_feedforward: bool = False,
             ) -> Tuple[SimulationBuffers, TimeControlVariables,
@@ -528,7 +528,7 @@ class SimulationManager:
             forcing_buffers: ForcingBuffers = None, 
             perform_reinitialization: bool = False,
             perform_compression: bool = False,
-            ml_parameters_dict: Union[Dict, None] = None,
+            ml_parameters_dict: Union[Dict, Array, None] = None,
             ml_networks_dict: Union[Dict, None] = None,
             is_feedforward: bool = False
             ) -> Tuple[MaterialFieldBuffers, TimeControlVariables,
@@ -682,7 +682,7 @@ class SimulationManager:
             primitives, conservatives = \
             self.halo_manager.perform_halo_update_material(
                 primitives, current_time_stage, is_viscous_flux,
-                False, conservatives)
+                False, conservatives,ml_parameters_dict=ml_parameters_dict)
 
             # INTERFACE QUANTITIES AND RESIDUAL INFO
             if equation_type == "TWO-PHASE-LS":
@@ -1100,16 +1100,17 @@ class SimulationManager:
     def feed_forward(
             self, 
             batch_primes_init: Array, 
-            physical_timestep_size: Array, 
+            physical_timestep_size: float, 
             t_start: float, 
             outer_steps: int, 
             inner_steps: int = 1,
-            is_scan: bool = True,
+            is_scan: bool = False,
             is_checkpoint: bool = True,
             is_include_t0: bool = True,
             batch_levelset_init: Array = None,
             batch_solid_interface_velocity_init: Array = None,
-            ml_parameters_dict: Union[Dict, None] = None, 
+            forcing_parameters: ForcingParameters = ForcingParameters(),
+            ml_parameters_dict: Union[Dict, Array, None] = None, 
             ml_networks_dict: Union[Dict, None] = None
         ) -> Tuple[Array, Array]:
         """Vectorized version of the _feed_forward() method.
@@ -1136,7 +1137,7 @@ class SimulationManager:
 
         return jax.vmap(
                 self._feed_forward,
-                in_axes=(0,0,None,None,None,None,None,None,0,0,None,None),
+                in_axes=(0,None,None,None,None,None,None,None,0,0,None,None,None),
                 out_axes=(0,0,))(
             batch_primes_init,
             physical_timestep_size,
@@ -1148,6 +1149,7 @@ class SimulationManager:
             is_include_t0,
             batch_levelset_init,
             batch_solid_interface_velocity_init,
+            forcing_parameters,
             ml_parameters_dict,
             ml_networks_dict)
 
@@ -1158,12 +1160,13 @@ class SimulationManager:
             t_start: float, 
             outer_steps: int, 
             inner_steps: int = 1,
-            is_scan: bool = True,
+            is_scan: bool = False,
             is_checkpoint: bool = True,
             is_include_t0: bool = True,
             levelset_init: Array = None,   
-            solid_interface_velocity_init: Array = None,   
-            ml_parameters_dict: Union[Dict, None] = None,
+            solid_interface_velocity_init: Array = None,
+            forcing_parameters: ForcingParameters = ForcingParameters(),
+            ml_parameters_dict: Union[Dict, Array, None] = None,
             ml_networks_dict: Union[Dict, None] = None
         ) -> Tuple[Array, Array]:
         """Advances the initial buffers in time for a fixed amount of steps and returns the
@@ -1216,17 +1219,17 @@ class SimulationManager:
             post_process_fn=post_process_fn,
             outer_steps=outer_steps, inner_steps=inner_steps,
             is_scan=is_scan, is_checkpoint=is_checkpoint,
-            is_include_t0=is_include_t0, ml_networks_dict=ml_networks_dict)
+            is_include_t0=is_include_t0, ml_networks_dict=ml_parameters_dict)
 
         simulation_buffers, time_control_variables, \
-        forcing_parameters = initialize_fields_for_feedforward(
+        _ = initialize_fields_for_feedforward(
             sim_manager=self, primes_init=primes_init,
             physical_timestep_size=physical_timestep_size, t_start=t_start,
             levelset_init=levelset_init,
-            solid_interface_velocity_init=solid_interface_velocity_init)
+            solid_interface_velocity_init=solid_interface_velocity_init,ml_parameters_dict=ml_parameters_dict)
 
         solution_array, times_array = multistep(
             simulation_buffers, time_control_variables,
-            forcing_parameters, ml_parameters_dict)
+            forcing_parameters, ml_parameters_dict=ml_parameters_dict)
 
         return solution_array, times_array

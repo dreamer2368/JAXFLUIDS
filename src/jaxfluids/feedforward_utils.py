@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Any, Callable, Dict, Tuple, TYPE_CHECKING, NamedTuple
+from typing import Any, Callable, Dict, Tuple, TYPE_CHECKING, NamedTuple,Union
 
 import numpy as np
 
@@ -30,6 +30,7 @@ def initialize_fields_for_feedforward(
         t_start: float,
         levelset_init: Array,
         solid_interface_velocity_init: Array,
+        ml_parameters_dict: Union[Dict, Array, None] = None,
         ) -> Tuple[SimulationBuffers, TimeControlVariables, ForcingParameters]:
 
     # DOMAIN/EQUATION INFORMATION
@@ -57,7 +58,7 @@ def initialize_fields_for_feedforward(
     primitives = primitives.at[..., nhx, nhy, nhz].set(primes_init)
     conservatives = sim_manager.equation_manager.get_conservatives_from_primitives(primitives)
     primitives, conservatives = sim_manager.halo_manager.perform_halo_update_material(
-        primitives, t_start, is_viscous_flux, False, conservatives)
+        primitives, t_start, is_viscous_flux, False, conservatives,ml_parameters_dict=ml_parameters_dict)
 
     # INITIALIZE LEVELSET FIELD
     if levelset_model:

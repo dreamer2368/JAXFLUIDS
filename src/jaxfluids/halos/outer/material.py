@@ -6,6 +6,7 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 import numpy as np
+import warnings
 
 from jaxfluids.halos.outer.boundary_condition import BoundaryCondition, get_signs_symmetry
 from jaxfluids.domain.domain_information import DomainInformation
@@ -53,6 +54,7 @@ class BoundaryConditionMaterial(BoundaryCondition):
             primitives: Array,
             physical_simulation_time: float,
             conservatives: Array = None,
+            ml_parameters_dict: Union[Dict, Array, None] = None
             ) -> Tuple[Array, Array]:
         """Fills the face halo cells of the primitive and
         variable buffer. If conservatives is passed,
@@ -100,6 +102,54 @@ class BoundaryConditionMaterial(BoundaryCondition):
                         primitives, face_location,
                         wall_velocity_callable,
                         physical_simulation_time)
+                    
+                elif boundary_type in ["ISOTHERMALDISTURBANCEWALL","DISTURBANCEWALL"]:
+                    wall_velocity_callable = boundary_conditions_face.wall_velocity_callable
+                    halos_primes = self.disturbance_wall(
+                        primitives, face_location,
+                        physical_simulation_time,ml_parameters_dict)
+                    
+                elif boundary_type in ["ISOTHERMALGENERALVWALL","GENERALVWALL"]:
+                    wall_velocity_callable = boundary_conditions_face.wall_velocity_callable
+                    halos_primes = self.general_disturbance_wall(
+                        primitives, face_location,
+                        physical_simulation_time,ml_parameters_dict)
+                    
+                elif boundary_type in ["ISOTHERMALBEAVERJOSEPHWALL","BEAVERJOSEPHWALL"]:
+                    wall_velocity_callable = boundary_conditions_face.wall_velocity_callable
+                    halos_primes = self.beaver_joseph_wall(
+                        primitives, face_location,
+                        ml_parameters_dict)
+                    
+                elif boundary_type in ["ISOTHERMALJJPOROUSWALL","JJPOROUSWALL"]:
+                    wall_velocity_callable = boundary_conditions_face.wall_velocity_callable
+                    halos_primes = self.jj_porous_wall(
+                        primitives, face_location,
+                        ml_parameters_dict)
+
+                elif boundary_type in ["ISOTHERMALJJPOROUSUPWALL","JJPOROUSUPWALL"]:
+                    wall_velocity_callable = boundary_conditions_face.wall_velocity_callable
+                    halos_primes = self.jj_porous_upper_wall(
+                        primitives, face_location,
+                        ml_parameters_dict)
+
+                elif boundary_type in ["ISOTHERMALJJPOROUSLOWWALL","JJPOROUSLOWWALL"]:
+                    wall_velocity_callable = boundary_conditions_face.wall_velocity_callable
+                    halos_primes = self.jj_porous_lower_wall(
+                        primitives, face_location,
+                        ml_parameters_dict)
+
+                elif boundary_type in ["ISOTHERMALOPPOSITIONUPWALL","OPPOSITIONUPWALL"]:
+                    wall_velocity_callable = boundary_conditions_face.wall_velocity_callable
+                    halos_primes = self.opposition_wall_upper(
+                        primitives, face_location,
+                        ml_parameters_dict)
+
+                elif boundary_type in ["ISOTHERMALOPPOSITIONLOWWALL","OPPOSITIONLOWWALL"]:
+                    wall_velocity_callable = boundary_conditions_face.wall_velocity_callable
+                    halos_primes = self.opposition_wall_lower(
+                        primitives, face_location,
+                        ml_parameters_dict)
 
                 elif boundary_type in ["ISOTHERMALMASSTRANSFERWALL", "MASSTRANSFERWALL"]:
                     wall_velocity_callable = boundary_conditions_face.wall_velocity_callable
@@ -403,6 +453,149 @@ class BoundaryConditionMaterial(BoundaryCondition):
             ], axis=0)
 
         return halos_primes
+    
+    def disturbance_wall(
+            self, 
+            primitives: Array,
+            face_location: str, 
+            physical_simulation_time: float, 
+            ml_parameters_dict: Union[Dict, Array, None] = None
+            ) -> Array:
+        """Computes the primitive halos
+        for disturbance wall boundaries.
+
+        :param primitives: _description_
+        :type primitives: Array
+        :param face_location: _description_
+        :type face_location: str
+        :param wall_velocity_callable: _description_
+        :type wall_velocity_callable: VelocityCallable
+        :param physical_simulation_time: _description_
+        :type physical_simulation_time: float
+        :return: _description_
+        :rtype: Array
+        """
+
+        meshgrid, axes_to_expand = \
+        self.get_boundary_coordinates_at_location(
+            face_location)
+        #print(len(axes_to_expand))
+        #print(axes_to_expand[0])
+        #print(meshgrid[0].shape)
+        def wall_velocity_v_callable (*meshgrid:Array,amplitude:Array,\
+                                       kappa_x:Array,kappa_z:Array,frequency:Array,phase_lag:Array,start: float,stop:float) -> Array:
+
+            wall_velocity=jnp.where((meshgrid[0]>=start) & (meshgrid[0]<stop),1.0,0.0)*\
+                amplitude*jnp.sin(2*jnp.pi*(kappa_x*(meshgrid[0])\
+                                            +kappa_z*meshgrid[1]+\
+                                                frequency*physical_simulation_time\
+                                                    +phase_lag))
+            return wall_velocity
+
+        def wall_velocity_all (i,wall_velocity_list:list):
+            wall_velocity = wall_velocity_v_callable(*meshgrid,amplitude=ml_parameters_dict["A"][i],\
+                                                      kappa_x=ml_parameters_dict["kappa_x"],\
+                                                        kappa_z=ml_parameters_dict["kappa_z"],\
+                                                      frequency=ml_parameters_dict["Frequency"],\
+                                                       phase_lag=ml_parameters_dict["Phase_lag"][i],\
+                                                         start=ml_parameters_dict["start"],\
+                                                             stop=ml_parameters_dict["stop"] )
+            wall_velocity = jnp.expand_dims(wall_velocity, 1)
+            return wall_velocity_list.append(wall_velocity)
+        
+        wall_velocity_list = []
+        wall_velocity_all(0,wall_velocity_list)
+        wall_velocity_all(1,wall_velocity_list)
+        wall_velocity_all(2,wall_velocity_list)
+
+        #jax.lax.fori_loop(0,3,wall_velocity_all,wall_velocity_list)
+
+
+        vel_slices = self.equation_information.velocity_slices
+        mass_slices = self.equation_information.mass_slices
+        energy_slices = self.equation_information.energy_slices
+
+        velocity = primitives[vel_slices]
+        slices_retrieve = self.face_slices_retrieve_conservatives["SYMMETRY"][face_location]
+        u_halo = 2 * wall_velocity_list[0] - velocity[(jnp.s_[0:1],) + slices_retrieve]
+        v_halo = 2 * wall_velocity_list[1] - velocity[(jnp.s_[1:2],) + slices_retrieve]
+        w_halo = 2 * wall_velocity_list[2] - velocity[(jnp.s_[2:3],) + slices_retrieve]
+
+        halos_primes = jnp.concatenate([
+            primitives[(mass_slices,) + slices_retrieve],
+            u_halo,
+            v_halo,
+            w_halo,
+            primitives[(energy_slices,) + slices_retrieve]
+        ], axis=0)
+
+        diffuse_interface_model = self.equation_information.diffuse_interface_model
+        if diffuse_interface_model:
+            vf_slices = self.equation_information.vf_slices
+            halos_primes = jnp.concatenate([
+                halos_primes,
+                primitives[(vf_slices,) + slices_retrieve]
+            ], axis=0)
+
+        return halos_primes
+    
+    def general_disturbance_wall(
+            self, 
+            primitives: Array,
+            face_location: str, 
+            physical_simulation_time: float, 
+            ml_parameters_dict: Union[Dict, Array, None] = None
+            ) -> Array:
+        """Computes the primitive halos
+        for disturbance wall boundaries.
+
+        :param primitives: _description_
+        :type primitives: Array
+        :param face_location: _description_
+        :type face_location: str
+        :param wall_velocity_callable: _description_
+        :type wall_velocity_callable: VelocityCallable
+        :param physical_simulation_time: _description_
+        :type physical_simulation_time: float
+        :return: _description_
+        :rtype: Array
+        """
+
+        meshgrid, axes_to_expand = \
+        self.get_boundary_coordinates_at_location(
+            face_location)
+
+
+        #jax.lax.fori_loop(0,3,wall_velocity_all,wall_velocity_list)
+        v=ml_parameters_dict
+
+        vel_slices = self.equation_information.velocity_slices
+        mass_slices = self.equation_information.mass_slices
+        energy_slices = self.equation_information.energy_slices
+
+        velocity = primitives[vel_slices]
+        slices_retrieve = self.face_slices_retrieve_conservatives["SYMMETRY"][face_location]
+        u_halo = - velocity[(jnp.s_[0:1],) + slices_retrieve]
+        v_halo = 2 * v - velocity[(jnp.s_[1:2],) + slices_retrieve]
+        w_halo = - velocity[(jnp.s_[2:3],) + slices_retrieve]
+
+        halos_primes = jnp.concatenate([
+            primitives[(mass_slices,) + slices_retrieve],
+            u_halo,
+            v_halo,
+            w_halo,
+            primitives[(energy_slices,) + slices_retrieve]
+        ], axis=0)
+
+        diffuse_interface_model = self.equation_information.diffuse_interface_model
+        if diffuse_interface_model:
+            vf_slices = self.equation_information.vf_slices
+            halos_primes = jnp.concatenate([
+                halos_primes,
+                primitives[(vf_slices,) + slices_retrieve]
+            ], axis=0)
+
+        return halos_primes
 
     def masstransferwall(
             self, 
@@ -616,6 +809,355 @@ class BoundaryConditionMaterial(BoundaryCondition):
 
         return halos_primes
 
+
+    def beaver_joseph_wall(
+            self,
+            primitives: Array,
+            face_location: str,
+            ml_parameters_dict: Union[Dict, Array,None] = None
+            ) -> Array:
+        """Computes primitive halos for NEUMANN
+        boundary conditions. 
+
+        :param primitives: _description_
+        :type primitives: Array
+        :param face_location: _description_
+        :type face_location: str
+        :param functions: _description_
+        :type functions: Union[Callable, float]
+        :param physical_simulation_time: _description_
+        :type physical_simulation_time: float
+        :param slice_retrieve: _description_
+        :type slice_retrieve: Tuple
+        :return: _description_
+        :rtype: Array
+        """
+        
+        meshgrid, axes_to_expand = \
+        self.get_boundary_coordinates_at_location(
+            face_location)
+
+        slices_retrieve1 = self.face_slices_retrieve_conservatives["ZEROGRADIENT"][face_location]
+        #slices_retrieve2 = self.face_slices_retrieve_conservatives["BeaverJoseph"][face_location]
+        slices_retrieve3 = self.face_slices_retrieve_conservatives["SYMMETRY"][face_location]
+        dx = self.get_cell_size_at_face(face_location)*self.upwind_difference_sign[face_location]
+
+        U_d=ml_parameters_dict["U_d"]
+        K_sqrt=ml_parameters_dict["K_sqrt"]
+        K_sqrt_dx=2*K_sqrt/dx
+
+        vel_slices = self.equation_information.velocity_slices
+        mass_slices = self.equation_information.mass_slices
+        energy_slices = self.equation_information.energy_slices
+        velocity = primitives[vel_slices]
+
+        u1=velocity[(jnp.s_[0:1],) + slices_retrieve1] # first layer velocity u
+        w1=velocity[(jnp.s_[2:3],) + slices_retrieve1] # first layer velocity w
+
+        u=(K_sqrt_dx*u1+U_d)/(K_sqrt_dx+1) # the implicit beaver joseph
+        v=jnp.zeros_like(u)
+        w=(K_sqrt_dx*w1)/(K_sqrt_dx+1)
+
+        u_halo = 2*u-velocity[(jnp.s_[0:1],) + slices_retrieve3]
+        v_halo = v - velocity[(jnp.s_[1:2],) + slices_retrieve3]
+        w_halo = 2*w-velocity[(jnp.s_[2:3],) + slices_retrieve3]
+
+        halos_primes = jnp.concatenate([
+            primitives[(mass_slices,) + slices_retrieve3],
+            u_halo,
+            v_halo,
+            w_halo,
+            primitives[(energy_slices,) + slices_retrieve3]
+        ], axis=0)
+
+        return halos_primes
+    
+    def jj_porous_wall(
+            self,
+            primitives: Array,
+            face_location: str,
+            ml_parameters_dict: Union[Dict, Array, None] = None
+            ) -> Array:
+        """Computes primitive halos for NEUMANN
+        boundary conditions. 
+
+        :param primitives: _description_
+        :type primitives: Array
+        :param face_location: _description_
+        :type face_location: str
+        :param functions: _description_
+        :type functions: Union[Callable, float]
+        :param physical_simulation_time: _description_
+        :type physical_simulation_time: float
+        :param slice_retrieve: _description_
+        :type slice_retrieve: Tuple
+        :return: _description_
+        :rtype: Array
+        """
+        
+        meshgrid, axes_to_expand = \
+        self.get_boundary_coordinates_at_location(
+            face_location)
+
+        slices_retrieve1 = self.face_slices_retrieve_conservatives["ZEROGRADIENT"][face_location]
+        slices_retrieve3 = self.face_slices_retrieve_conservatives["SYMMETRY"][face_location]
+
+        beta=ml_parameters_dict
+
+        vel_slices = self.equation_information.velocity_slices
+        mass_slices = self.equation_information.mass_slices
+        energy_slices = self.equation_information.energy_slices
+        velocity = primitives[vel_slices]
+        pressure = primitives[energy_slices]
+
+        pressure_wall=pressure[slices_retrieve1]
+
+        pressure_wall_mean=jnp.mean(pressure_wall,keepdims=True)
+
+        pressure_fluctuation=pressure_wall-pressure_wall_mean
+
+        v=-beta*self.upwind_difference_sign[face_location]*pressure_fluctuation
+        u=jnp.zeros_like(v)
+        w=jnp.zeros_like(v)
+
+        u_halo = 2*u- velocity[(jnp.s_[0:1],) + slices_retrieve3]
+        v_halo = 2*v- velocity[(jnp.s_[1:2],) + slices_retrieve3]
+        w_halo = 2*w- velocity[(jnp.s_[2:3],) + slices_retrieve3]
+
+        halos_primes = jnp.concatenate([
+            primitives[(mass_slices,) + slices_retrieve3],
+            u_halo,
+            v_halo,
+            w_halo,
+            primitives[(energy_slices,) + slices_retrieve3]
+        ], axis=0)
+
+        return halos_primes
+    
+    def jj_porous_upper_wall(
+            self,
+            primitives: Array,
+            face_location: str,
+            ml_parameters_dict: Union[Dict, Array, None] = None
+            ) -> Array:
+        """Computes primitive halos for NEUMANN
+        boundary conditions. 
+
+        :param primitives: _description_
+        :type primitives: Array
+        :param face_location: _description_
+        :type face_location: str
+        :param functions: _description_
+        :type functions: Union[Callable, float]
+        :param physical_simulation_time: _description_
+        :type physical_simulation_time: float
+        :param slice_retrieve: _description_
+        :type slice_retrieve: Tuple
+        :return: _description_
+        :rtype: Array
+        """
+        
+        meshgrid, axes_to_expand = \
+        self.get_boundary_coordinates_at_location(
+            face_location)
+
+        slices_retrieve1 = self.face_slices_retrieve_conservatives["ZEROGRADIENT"][face_location]
+        slices_retrieve3 = self.face_slices_retrieve_conservatives["SYMMETRY"][face_location]
+
+        beta=ml_parameters_dict["upper"]
+
+        vel_slices = self.equation_information.velocity_slices
+        mass_slices = self.equation_information.mass_slices
+        energy_slices = self.equation_information.energy_slices
+        velocity = primitives[vel_slices]
+        pressure = primitives[energy_slices]
+
+        pressure_wall=pressure[slices_retrieve1]
+
+        pressure_wall_mean=jnp.mean(pressure_wall,keepdims=True)
+
+        pressure_fluctuation=pressure_wall-pressure_wall_mean
+
+        v=-beta*self.upwind_difference_sign[face_location]*pressure_fluctuation
+        u=jnp.zeros_like(v)
+        w=jnp.zeros_like(v)
+
+        u_halo = 2*u- velocity[(jnp.s_[0:1],) + slices_retrieve3]
+        v_halo = 2*v- velocity[(jnp.s_[1:2],) + slices_retrieve3]
+        w_halo = 2*w- velocity[(jnp.s_[2:3],) + slices_retrieve3]
+
+        halos_primes = jnp.concatenate([
+            primitives[(mass_slices,) + slices_retrieve3],
+            u_halo,
+            v_halo,
+            w_halo,
+            primitives[(energy_slices,) + slices_retrieve3]
+        ], axis=0)
+
+        return halos_primes
+
+    def jj_porous_lower_wall(
+            self,
+            primitives: Array,
+            face_location: str,
+            ml_parameters_dict: Union[Dict, Array, None] = None
+            ) -> Array:
+        """Computes primitive halos for NEUMANN
+        boundary conditions. 
+
+        :param primitives: _description_
+        :type primitives: Array
+        :param face_location: _description_
+        :type face_location: str
+        :param functions: _description_
+        :type functions: Union[Callable, float]
+        :param physical_simulation_time: _description_
+        :type physical_simulation_time: float
+        :param slice_retrieve: _description_
+        :type slice_retrieve: Tuple
+        :return: _description_
+        :rtype: Array
+        """
+        
+        meshgrid, axes_to_expand = \
+        self.get_boundary_coordinates_at_location(
+            face_location)
+
+        slices_retrieve1 = self.face_slices_retrieve_conservatives["ZEROGRADIENT"][face_location]
+        slices_retrieve3 = self.face_slices_retrieve_conservatives["SYMMETRY"][face_location]
+
+        beta=ml_parameters_dict["lower"]
+
+        vel_slices = self.equation_information.velocity_slices
+        mass_slices = self.equation_information.mass_slices
+        energy_slices = self.equation_information.energy_slices
+        velocity = primitives[vel_slices]
+        pressure = primitives[energy_slices]
+
+        pressure_wall=pressure[slices_retrieve1]
+
+        pressure_wall_mean=jnp.mean(pressure_wall,keepdims=True)
+
+        pressure_fluctuation=pressure_wall-pressure_wall_mean
+
+        v=-beta*self.upwind_difference_sign[face_location]*pressure_fluctuation
+        u=jnp.zeros_like(v)
+        w=jnp.zeros_like(v)
+
+        u_halo = 2*u- velocity[(jnp.s_[0:1],) + slices_retrieve3]
+        v_halo = 2*v- velocity[(jnp.s_[1:2],) + slices_retrieve3]
+        w_halo = 2*w- velocity[(jnp.s_[2:3],) + slices_retrieve3]
+
+        halos_primes = jnp.concatenate([
+            primitives[(mass_slices,) + slices_retrieve3],
+            u_halo,
+            v_halo,
+            w_halo,
+            primitives[(energy_slices,) + slices_retrieve3]
+        ], axis=0)
+
+        return halos_primes
+    
+    def opposition_wall_upper(
+            self,
+            primitives: Array,
+            face_location: str,
+            ml_parameters_dict: Union[Dict, Array, None] = None
+            ) -> Array:
+        """Computes primitive halos for NEUMANN
+        boundary conditions. 
+
+        :param primitives: _description_
+        :type primitives: Array
+        :param face_location: _description_
+        :type face_location: str
+        :param functions: _description_
+        :type functions: Union[Callable, float]
+        :param physical_simulation_time: _description_
+        :type physical_simulation_time: float
+        :param slice_retrieve: _description_
+        :type slice_retrieve: Tuple
+        :return: _description_
+        :rtype: Array
+        """
+        
+        meshgrid, axes_to_expand = \
+        self.get_boundary_coordinates_at_location(
+            face_location)
+
+        slices_retrieve3 = self.face_slices_retrieve_conservatives["SYMMETRY"][face_location]
+
+        vel_slices = self.equation_information.velocity_slices
+        mass_slices = self.equation_information.mass_slices
+        energy_slices = self.equation_information.energy_slices
+        velocity = primitives[vel_slices]
+
+        v=ml_parameters_dict["upper"]*self.upwind_difference_sign[face_location]
+
+        u_halo = - velocity[(jnp.s_[0:1],) + slices_retrieve3]
+        v_halo = 2*v- velocity[(jnp.s_[1:2],) + slices_retrieve3]
+        w_halo = - velocity[(jnp.s_[2:3],) + slices_retrieve3]
+
+        halos_primes = jnp.concatenate([
+            primitives[(mass_slices,) + slices_retrieve3],
+            u_halo,
+            v_halo,
+            w_halo,
+            primitives[(energy_slices,) + slices_retrieve3]
+        ], axis=0)
+
+        return halos_primes
+
+    def opposition_wall_lower(
+            self,
+            primitives: Array,
+            face_location: str,
+            ml_parameters_dict: Union[Dict, Array, None] = None
+            ) -> Array:
+        """Computes primitive halos for NEUMANN
+        boundary conditions. 
+
+        :param primitives: _description_
+        :type primitives: Array
+        :param face_location: _description_
+        :type face_location: str
+        :param functions: _description_
+        :type functions: Union[Callable, float]
+        :param physical_simulation_time: _description_
+        :type physical_simulation_time: float
+        :param slice_retrieve: _description_
+        :type slice_retrieve: Tuple
+        :return: _description_
+        :rtype: Array
+        """
+        
+        meshgrid, axes_to_expand = \
+        self.get_boundary_coordinates_at_location(
+            face_location)
+
+        slices_retrieve3 = self.face_slices_retrieve_conservatives["SYMMETRY"][face_location]
+
+        vel_slices = self.equation_information.velocity_slices
+        mass_slices = self.equation_information.mass_slices
+        energy_slices = self.equation_information.energy_slices
+        velocity = primitives[vel_slices]
+
+        v=ml_parameters_dict["lower"]*self.upwind_difference_sign[face_location]
+
+        u_halo = - velocity[(jnp.s_[0:1],) + slices_retrieve3]
+        v_halo = 2*v- velocity[(jnp.s_[1:2],) + slices_retrieve3]
+        w_halo = - velocity[(jnp.s_[2:3],) + slices_retrieve3]
+
+        halos_primes = jnp.concatenate([
+            primitives[(mass_slices,) + slices_retrieve3],
+            u_halo,
+            v_halo,
+            w_halo,
+            primitives[(energy_slices,) + slices_retrieve3]
+        ], axis=0)
+
+        return halos_primes
+
     def miscellaneous(
             self,
             primitives: Array,
@@ -674,7 +1216,10 @@ class BoundaryConditionMaterial(BoundaryCondition):
             for boundary_conditions_face in boundary_conditions_face_tuple:
 
                 boundary_type = boundary_conditions_face.boundary_type
-                if boundary_type in ["ISOTHERMALWALL", "ISOTHERMALMASSTRANSFERWALL"]:
+                if boundary_type in ["ISOTHERMALWALL", "ISOTHERMALMASSTRANSFERWALL","ISOTHERMALDISTURBANCEWALL",
+                                     "ISOTHERMALGENERALVWALL","ISOTHERMALJJPOROUSWALL","ISOTHERMALBEAVERJOSEPHWALL",
+                                     "ISOTHERMALOPPOSITIONUPWALL","ISOTHERMALOPPOSITIONLOWWALL",
+                                     "ISOTHERMALJJPOROUSUPWALL","ISOTHERMALJJPOROUSLOWWALL"]:
                     wall_temperature_callable = boundary_conditions_face.wall_temperature_callable
                     halos = self.wall_temperature(
                         temperature, face_location,

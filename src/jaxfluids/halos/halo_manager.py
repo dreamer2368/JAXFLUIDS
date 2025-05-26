@@ -1,6 +1,6 @@
 
 from __future__ import annotations
-from typing import Tuple, Dict, TYPE_CHECKING
+from typing import Tuple, Dict, Union, TYPE_CHECKING
 
 import jax
 import jax.numpy as jnp
@@ -95,7 +95,8 @@ class HaloManager:
             fill_edge_halos: bool,
             fill_vertex_halos: bool,
             conservatives: Array = None,
-            fill_face_halos: bool = True
+            fill_face_halos: bool = True,
+            ml_parameters_dict: Union[Dict, Array, None] = None
             ) -> Tuple[Array, Array]:
         """Performs a halo update for the material
         field buffers.
@@ -121,7 +122,7 @@ class HaloManager:
                     primitives, conservatives = self.halo_communication_material.face_halo_update(
                         primitives, conservatives)
                     primitives, conservatives = self.boundary_condition_material.face_halo_update(
-                        primitives, physical_simulation_time, conservatives)
+                        primitives, physical_simulation_time, conservatives,ml_parameters_dict=ml_parameters_dict)
                 if self.dim > 1 and fill_edge_halos:
                     primitives, conservatives = self.halo_communication_material.edge_halo_update(
                         primitives, conservatives)
@@ -135,7 +136,7 @@ class HaloManager:
             else:
                 if fill_face_halos:
                     primitives, conservatives = self.boundary_condition_material.face_halo_update(
-                        primitives, physical_simulation_time, conservatives)
+                        primitives, physical_simulation_time, conservatives,ml_parameters_dict=ml_parameters_dict)
                 if self.dim > 1 and fill_edge_halos:
                     primitives, conservatives = self.boundary_condition_material.edge_halo_update(
                         primitives, conservatives)
@@ -149,7 +150,7 @@ class HaloManager:
                     primitives = self.halo_communication_material.face_halo_update(
                         primitives)
                     primitives = self.boundary_condition_material.face_halo_update(
-                        primitives, physical_simulation_time)
+                        primitives, physical_simulation_time,ml_parameters_dict=ml_parameters_dict)
                 if self.dim > 1 and fill_edge_halos:
                     primitives = self.halo_communication_material.edge_halo_update(
                         primitives)

@@ -60,7 +60,8 @@ class MaterialFieldsInitializer:
     def initialize(
             self,
             user_prime_init: Union[np.ndarray, Array] = None,
-            user_time_init: float = None
+            user_time_init: float = None,
+            ml_parameters_dict: Union[Dict, None] = None,
             ) -> Tuple[MaterialFieldBuffers, TimeControlVariables]:
         """Initializes the material field buffers.
 
@@ -69,7 +70,7 @@ class MaterialFieldsInitializer:
         :return: _description_
         :rtype: Dict[str, Array]
         """
-
+        #print(ml_parameters_dict["A"])
         is_restart = self.restart_setup.flag
         is_parallel = self.domain_information.is_parallel
         cell_centers = self.domain_information.get_local_cell_centers()
@@ -78,11 +79,11 @@ class MaterialFieldsInitializer:
         simulation_step = 0
 
         if is_restart:
-            material_fields, physical_simulation_time = self.from_restart_file()
+            material_fields, physical_simulation_time = self.from_restart_file(ml_parameters_dict)
 
         elif user_prime_init is not None:
             material_fields, physical_simulation_time \
-                = self.from_user_specified_buffer(user_prime_init, user_time_init)
+                = self.from_user_specified_buffer(user_prime_init, user_time_init,ml_parameters_dict)
             
         elif self.is_turb_init:
             if is_parallel:
@@ -96,11 +97,11 @@ class MaterialFieldsInitializer:
         else:
             if is_parallel:
                 material_fields = jax.pmap(
-                    self.from_primitive_initial_condition,
-                    axis_name="i")(cell_centers)
+                    self.from_primitive_initial_condition,in_axes=(0,None),
+                    axis_name="i")(cell_centers, ml_parameters_dict)
             else:
                 material_fields = self.from_primitive_initial_condition(
-                    cell_centers)
+                    cell_centers, ml_parameters_dict)
 
         time_control_variables = TimeControlVariables(
             physical_simulation_time, simulation_step)
@@ -110,7 +111,8 @@ class MaterialFieldsInitializer:
     def create_material_fields(
             self,
             primitives_np: Array,
-            physical_simulation_time: float
+            physical_simulation_time: float,
+            ml_parameters_dict: Union[Dict, Array, None] = None
             ) -> MaterialFieldBuffers:
         """Prepares the material fields given a
         numpy primitive buffer, i.e.,
@@ -150,12 +152,15 @@ class MaterialFieldsInitializer:
         conservatives = self.equation_manager.get_conservatives_from_primitives(primitives)
         primitives, conservatives = self.halo_manager.perform_halo_update_material(
             primitives, physical_simulation_time, self.is_viscous_flux,
-            False, conservatives)
+            False, conservatives,ml_parameters_dict=ml_parameters_dict)
         material_fields = MaterialFieldBuffers(
             conservatives, primitives)
         return material_fields
     
-    def from_restart_file(self) -> MaterialFieldBuffers:
+    def from_restart_file(
+            self,
+            ml_parameters_dict: Union[Dict, None] = None
+        ) -> MaterialFieldBuffers:
         """Initializes the material field buffers
         from a restart .h5 file.
 
@@ -371,17 +376,18 @@ class MaterialFieldsInitializer:
             if is_multihost and not is_equal_decomposition:
                 s_ = jnp.s_[process_id*local_device_count:(process_id+1)*local_device_count]
                 primitives = primitives[s_]
-            material_fields = jax.pmap(self.create_material_fields, axis_name="i", in_axes=(0,None))(
-                primitives, physical_simulation_time)
+            material_fields = jax.pmap(self.create_material_fields, axis_name="i", in_axes=(0,None,None))(
+                primitives, physical_simulation_time,ml_parameters_dict)
         else:
-            material_fields = self.create_material_fields(primitives, physical_simulation_time)
+            material_fields = self.create_material_fields(primitives, physical_simulation_time,ml_parameters_dict)
 
         return material_fields, physical_simulation_time
 
     def from_user_specified_buffer(
             self,
             user_prime_init: Array,
-            user_time_init: float
+            user_time_init: float,
+            ml_parameters_dict:Union[Dict, Array, None] = None
             ) -> MaterialFieldBuffers:
         """Initializes the simulations from buffers provided by the user.
 
@@ -427,10 +433,10 @@ class MaterialFieldsInitializer:
             if is_multihost:
                 s_ = jnp.s_[process_id*local_device_count:(process_id+1)*local_device_count]
                 primitives = primitives[s_]
-            material_fields = jax.pmap(self.create_material_fields, axis_name="i", in_axes=(0,None))(
-                primitives, physical_simulation_time)
+            material_fields = jax.pmap(self.create_material_fields, axis_name="i", in_axes=(0,None,0))(
+                primitives, physical_simulation_time,ml_parameters_dict)
         else:
-            material_fields = self.create_material_fields(user_prime_init, physical_simulation_time)
+            material_fields = self.create_material_fields(user_prime_init, physical_simulation_time,ml_parameters_dict)
 
         
         return material_fields, physical_simulation_time        
@@ -476,7 +482,8 @@ class MaterialFieldsInitializer:
 
     def from_primitive_initial_condition(
             self,
-            cell_centers: List
+            cell_centers: List,
+            ml_parameters_dict: Union[Dict, Array, None] = None,
             ) -> MaterialFieldBuffers:
         """Computes the conservative and primitive
         variable buffers from the primitive initial
@@ -488,6 +495,7 @@ class MaterialFieldsInitializer:
         :return: _description_
         :rtype: MaterialFieldBuffers
         """
+        #print(ml_parameters_dict["A"])
         # DOMAIN/EQUATION INFORMATION
         nh = self.domain_information.nh_conservatives
         nhx, nhy, nhz = self.domain_information.domain_slices_conservatives
@@ -557,7 +565,7 @@ class MaterialFieldsInitializer:
         primitives, conservatives = \
         self.halo_manager.perform_halo_update_material(
             primitives, 0.0, self.is_viscous_flux,
-            False, conservatives)
+            False, conservatives,ml_parameters_dict=ml_parameters_dict)
         
         material_fields = MaterialFieldBuffers(
             conservatives, primitives)
